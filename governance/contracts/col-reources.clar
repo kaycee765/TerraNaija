@@ -1,6 +1,6 @@
-;; Interplanetary Soil Rehabilitation Initiative Smart Contract - v2.0.0 (Enhanced Controls)
-;; Facilitates contributions to off-world soil restoration projects and manages colony eligibility
-;; with enhanced program controls and soil status tracking
+;; Interplanetary Soil Rehabilitation Initiative Smart Contract - v3.0.0 (Full Feature)
+;; Facilitates contributions to off-world soil restoration projects, manages colony eligibility,
+;; and provides transparent distribution of resources to verified terraforming initiatives
 
 ;; Error Constants
 (define-constant ERR-NOT-AUTHORIZED (err u100))
@@ -11,12 +11,14 @@
 (define-constant ERR-PROGRAM-PAUSED (err u105))
 (define-constant ERR-CONTRIBUTION-INVALID (err u106))
 (define-constant ERR-SOIL-STATUS-INVALID (err u107))
+(define-constant ERR-INVALID-DIRECTOR-ADDRESS (err u108))
 
 ;; Core Program Variables
 (define-data-var terraforming-director principal tx-sender)
 (define-data-var rehabilitation-vault uint u0)
 (define-data-var program-is-active bool true)
 (define-data-var contribution-minimum uint u1000000) ;; 1 STX
+(define-data-var quarantine-mode-active bool false)
 
 ;; Data Storage
 (define-map rehabilitation-colonies 
@@ -55,7 +57,7 @@
 )
 
 (define-read-only (check-program-status)
-    (var-get program-is-active)
+    (and (var-get program-is-active) (not (var-get quarantine-mode-active)))
 )
 
 ;; Helper Functions
@@ -96,13 +98,20 @@
     )
 )
 
+(define-private (can-be-director (candidate-address principal))
+    (and 
+        (not (is-eq candidate-address (var-get terraforming-director)))
+        (not (is-eq candidate-address (as-contract tx-sender)))
+    )
+)
+
 ;; Public Functions
 (define-public (contribute-to-terraforming)
     (let (
         (contribution-amount (stx-get-balance tx-sender))
     )
     (asserts! (>= contribution-amount (var-get contribution-minimum)) ERR-CONTRIBUTION-TOO-SMALL)
-    (asserts! (var-get program-is-active) ERR-PROGRAM-PAUSED)
+    (asserts! (check-program-status) ERR-PROGRAM-PAUSED)
     
     (try! (stx-transfer? contribution-amount tx-sender (as-contract tx-sender)))
     (var-set rehabilitation-vault (+ (var-get rehabilitation-vault) contribution-amount))
@@ -132,7 +141,7 @@
 (define-public (allocate-resources (colony-address principal) (resource-amount uint))
     (begin
         (asserts! (is-director) ERR-NOT-AUTHORIZED)
-        (asserts! (var-get program-is-active) ERR-PROGRAM-PAUSED)
+        (asserts! (check-program-status) ERR-PROGRAM-PAUSED)
         (asserts! (>= (var-get rehabilitation-vault) resource-amount) ERR-RESOURCES-UNAVAILABLE)
         (asserts! 
             (is-some (map-get? rehabilitation-colonies colony-address)) 
@@ -176,6 +185,22 @@
     )
 )
 
+(define-public (set-quarantine-mode-on)
+    (begin
+        (asserts! (is-director) ERR-NOT-AUTHORIZED)
+        (var-set quarantine-mode-active true)
+        (ok true)
+    )
+)
+
+(define-public (set-quarantine-mode-off)
+    (begin
+        (asserts! (is-director) ERR-NOT-AUTHORIZED)
+        (var-set quarantine-mode-active false)
+        (ok true)
+    )
+)
+
 (define-public (update-soil-status (colony-address principal) (new-status (string-ascii 20)))
     (begin
         (asserts! (is-director) ERR-NOT-AUTHORIZED)
@@ -201,9 +226,11 @@
     )
 )
 
+;; Governance Function
 (define-public (change-director (new-director-address principal))
     (begin
         (asserts! (is-director) ERR-NOT-AUTHORIZED)
+        (asserts! (can-be-director new-director-address) ERR-INVALID-DIRECTOR-ADDRESS)
         (var-set terraforming-director new-director-address)
         (ok true)
     )
